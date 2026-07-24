@@ -352,8 +352,13 @@ class App(tk.Tk):
         self.after(1800, self._refresh_status)
 
     def _show_context_menu(self, event, idx):
+        apps = self.cfg.get("apps", [])
+        is_running = idx < len(apps) and apps[idx]["path"] in self._running
         menu = tk.Menu(self, tearoff=0)
-        menu.add_command(label="起動", command=lambda: self._on_panel_click(idx))
+        menu.add_command(label="起動", command=lambda: self._on_panel_click(idx),
+                         state="disabled" if is_running else "normal")
+        menu.add_command(label="停止", command=lambda: self._stop_app(idx),
+                         state="normal" if is_running else "disabled")
         menu.add_separator()
         menu.add_command(label="編集…", command=lambda: self._edit_app(idx))
         menu.add_command(label="削除", command=lambda: self._delete_app(idx))
@@ -364,6 +369,43 @@ class App(tk.Tk):
             menu.tk_popup(event.x_root, event.y_root)
         finally:
             menu.grab_release()
+
+    def _stop_app(self, idx):
+        apps = self.cfg.get("apps", [])
+        if idx >= len(apps):
+            return
+        app = apps[idx]
+        if not messagebox.askyesno(
+                "停止の確認",
+                f"「{app['name']}」を停止しますか？\n\n"
+                "プロセスを強制終了します。処理中のデータがある場合は\n"
+                "先にソフト側で作業を終えてから停止してください。"):
+            return
+        path = app["path"]
+        self.status_var.set(f"「{app['name']}」を停止しています…")
+
+        def worker():
+            killed, failed = procmon.terminate(path)
+            self._ui_queue.put(lambda: self._apply_stop_result(app["name"], path,
+                                                              killed, failed))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _apply_stop_result(self, name, path, killed, failed):
+        if killed and not failed:
+            self.status_var.set(f"「{name}」を停止しました。")
+        elif killed:
+            self.status_var.set(f"「{name}」を停止しました（一部のプロセスを終了できませんでした）。")
+        elif failed:
+            messagebox.showwarning(
+                "停止できませんでした",
+                f"「{name}」のプロセスを終了できませんでした。\n"
+                "管理者権限で動作している可能性があります。")
+        else:
+            self.status_var.set(f"「{name}」は起動していませんでした。")
+        # 停止直後にすぐ再起動できるよう起動デバウンスを解除し、表示を更新する
+        self._recent_launch.pop(path, None)
+        self._refresh_status(force=True)
 
     def _add_app(self):
         dlg = AppEditDialog(self, "アプリを追加")

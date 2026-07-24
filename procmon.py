@@ -15,6 +15,7 @@ _kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
 TH32CS_SNAPPROCESS = 0x00000002
 INVALID_HANDLE_VALUE = wintypes.HANDLE(-1).value
 PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+PROCESS_TERMINATE = 0x0001
 MAX_PATH_LONG = 32768
 
 
@@ -48,6 +49,8 @@ _kernel32.QueryFullProcessImageNameW.argtypes = [
     wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD)]
 _kernel32.CloseHandle.restype = wintypes.BOOL
 _kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+_kernel32.TerminateProcess.restype = wintypes.BOOL
+_kernel32.TerminateProcess.argtypes = [wintypes.HANDLE, wintypes.UINT]
 
 
 def _iter_processes():
@@ -121,3 +124,39 @@ def running_set(target_paths):
         for c in targets[name]:
             running.add(c)
     return running
+
+
+def terminate(target_path):
+    """target_path（exe フルパス）に厳密一致するプロセスを全て強制終了する。
+
+    表示用の running_set と違い、停止は誤爆が許されないため
+    フルパスが一致したものだけを対象にする（名前一致フォールバック無し）。
+    onefile PyInstaller アプリ（親+子の 2 プロセス）も両方止まる。
+    戻り値: (終了させた数, 失敗した数)
+    """
+    if not target_path:
+        return 0, 0
+    base = os.path.basename(target_path).lower()
+    want = os.path.normpath(target_path.lower())
+    killed = failed = 0
+    for pid, exe_name in _iter_processes():
+        if exe_name != base:
+            continue
+        h = _kernel32.OpenProcess(
+            PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_TERMINATE, False, pid)
+        if not h:
+            continue
+        try:
+            size = wintypes.DWORD(MAX_PATH_LONG)
+            buf = ctypes.create_unicode_buffer(size.value)
+            if not _kernel32.QueryFullProcessImageNameW(h, 0, buf, ctypes.byref(size)):
+                continue
+            if os.path.normpath(buf.value.lower()) != want:
+                continue
+            if _kernel32.TerminateProcess(h, 1):
+                killed += 1
+            else:
+                failed += 1
+        finally:
+            _kernel32.CloseHandle(h)
+    return killed, failed
