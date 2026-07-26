@@ -4,7 +4,7 @@
 登録した exe をパネルとして並べ、クリックで起動できる統合ランチャー。
 ・パネルは起動中=薄緑「● 起動中」/ 停止中=グレー「■ 停止中」を常時表示（2秒毎更新）
 ・×ボタンで終了せずタスクトレイに常駐（トレイの「終了」で完全終了）
-・Windows スタートアップ登録（--autostart 起動時はトレイ常駐で開始）
+・Windows スタートアップ登録（起動時もウィンドウを表示したまま開始）
 ・パッチ更新システム（GitHub Releases 参照）
 """
 import os
@@ -135,9 +135,8 @@ class App(tk.Tk):
         self.after(200, self._poll)
         self.after(150, self._drain_scans)
 
-        if autostart and HAS_TRAY:
-            # スタートアップ起動時はウィンドウを出さずトレイ常駐
-            self.withdraw()
+        # スタートアップ起動時（--autostart）もウィンドウを表示したまま起動する
+        # （トレイ格納は×ボタンを押した時のみ）
 
     # ---------- UI ----------
     def _build_ui(self):

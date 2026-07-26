@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """バージョン情報。パッチ更新システムはこの値をリモートと比較する。"""
 
-__version__ = "1.0.1"
+__version__ = "1.0.2"
 APP_NAME = "AppLauncher"
 APP_TITLE = "アプリランチャー"
 
