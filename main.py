@@ -322,7 +322,22 @@ class App(tk.Tk):
         app = apps[idx]
         path = app["path"]
         if getattr(self, "_running", None) and path in self._running:
-            self.status_var.set(f"「{app['name']}」は既に起動中です。")
+            # 起動中のパネルをクリック → 該当ソフトのウィンドウを前面に出す
+            # （最小化なら復元、タスクトレイ格納中なら表示して前面化）
+            name = app["name"]
+            self.status_var.set(f"「{name}」を前面に表示しています…")
+
+            def worker():
+                try:
+                    ok = procmon.bring_to_front(path)
+                except Exception:
+                    ok = False
+                msg = (f"「{name}」を前面に表示しました。" if ok else
+                       f"「{name}」のウィンドウが見つかりません。"
+                       "タスクトレイのアイコンから開いてください。")
+                self._ui_queue.put(lambda: self.status_var.set(msg))
+
+            threading.Thread(target=worker, daemon=True).start()
             return
         if not os.path.isfile(path):
             messagebox.showerror(

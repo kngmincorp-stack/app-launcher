@@ -11,6 +11,7 @@ import ctypes
 from ctypes import wintypes
 
 _kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+_user32 = ctypes.WinDLL("user32", use_last_error=True)
 
 TH32CS_SNAPPROCESS = 0x00000002
 INVALID_HANDLE_VALUE = wintypes.HANDLE(-1).value
@@ -124,6 +125,113 @@ def running_set(target_paths):
         for c in targets[name]:
             running.add(c)
     return running
+
+
+def matching_pids(target_path):
+    """target_path（exe フルパス）に厳密一致するプロセスの PID リスト。"""
+    if not target_path:
+        return []
+    base = os.path.basename(target_path).lower()
+    want = os.path.normpath(target_path.lower())
+    pids = []
+    for pid, exe_name in _iter_processes():
+        if exe_name != base:
+            continue
+        full = _full_path_of(pid)
+        if full and os.path.normpath(full) == want:
+            pids.append(pid)
+    return pids
+
+
+# ウィンドウ前面化用の Win32 定数
+_GW_OWNER = 4
+_GWL_EXSTYLE = -20
+_WS_EX_TOOLWINDOW = 0x00000080
+_SW_SHOW = 5
+_SW_RESTORE = 9
+_WNDENUMPROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+
+_user32.EnumWindows.restype = wintypes.BOOL
+_user32.EnumWindows.argtypes = [_WNDENUMPROC, wintypes.LPARAM]
+_user32.GetWindowThreadProcessId.restype = wintypes.DWORD
+_user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+_user32.GetWindow.restype = wintypes.HWND
+_user32.GetWindow.argtypes = [wintypes.HWND, wintypes.UINT]
+_user32.GetWindowTextLengthW.restype = ctypes.c_int
+_user32.GetWindowTextLengthW.argtypes = [wintypes.HWND]
+_user32.GetWindowLongW.restype = wintypes.LONG
+_user32.GetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int]
+_user32.GetClassNameW.restype = ctypes.c_int
+_user32.GetClassNameW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+_user32.GetWindowRect.restype = wintypes.BOOL
+_user32.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
+_user32.IsWindowVisible.restype = wintypes.BOOL
+_user32.IsWindowVisible.argtypes = [wintypes.HWND]
+_user32.IsIconic.restype = wintypes.BOOL
+_user32.IsIconic.argtypes = [wintypes.HWND]
+_user32.ShowWindow.restype = wintypes.BOOL
+_user32.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
+_user32.SetForegroundWindow.restype = wintypes.BOOL
+_user32.SetForegroundWindow.argtypes = [wintypes.HWND]
+
+
+def bring_to_front(target_path):
+    """target_path のプロセスのメインウィンドウを前面に出す。
+
+    ・最小化されていれば復元、タスクトレイ格納（非表示）なら表示してから前面化。
+    ・メインウィンドウの判定: 所有者なし・タイトルあり・ツールウィンドウでなく、
+      既知の内部ウィンドウ（Tk のモニタ監視用 / PyInstaller onefile の隠し
+      ウィンドウ。どちらもタイトルとキャプションを持つため見た目では
+      メインと区別できない — FolderSyncCopier で実測済み）をクラス名で除外。
+      残りから可視を優先し、同条件なら面積が最大のもの。
+    戻り値: 前面化できたら True。
+    """
+    pids = set(matching_pids(target_path))
+    if not pids:
+        return False
+
+    candidates = []  # (visible, area, hwnd, iconic)
+    # メインウィンドウと紛らわしい既知の内部ウィンドウクラス
+    noise_classes = {"ttkmonitorclass", "pyinstalleronefilehiddenwindow"}
+
+    def _cb(hwnd, _lparam):
+        pid = wintypes.DWORD()
+        _user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        if pid.value not in pids:
+            return True
+        if _user32.GetWindow(hwnd, _GW_OWNER):
+            return True
+        if _user32.GetWindowTextLengthW(hwnd) == 0:
+            return True
+        if _user32.GetWindowLongW(hwnd, _GWL_EXSTYLE) & _WS_EX_TOOLWINDOW:
+            return True
+        cls = ctypes.create_unicode_buffer(256)
+        if _user32.GetClassNameW(hwnd, cls, 256) and cls.value.lower() in noise_classes:
+            return True
+        rect = wintypes.RECT()
+        area = 0
+        if _user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+            area = max(0, rect.right - rect.left) * max(0, rect.bottom - rect.top)
+        visible = bool(_user32.IsWindowVisible(hwnd))
+        iconic = bool(_user32.IsIconic(hwnd))
+        candidates.append((visible, area, hwnd, iconic))
+        return True
+
+    _user32.EnumWindows(_WNDENUMPROC(_cb), 0)
+    if not candidates:
+        return False
+
+    visible, area, hwnd, iconic = max(candidates, key=lambda c: (c[0], c[1]))
+    if not visible and area < 10000:
+        # 非表示かつ極端に小さいウィンドウしか無い場合は内部ウィンドウの
+        # 可能性が高いため、誤って表示しない
+        return False
+    if iconic:
+        _user32.ShowWindow(hwnd, _SW_RESTORE)
+    elif not visible:
+        _user32.ShowWindow(hwnd, _SW_SHOW)
+    _user32.SetForegroundWindow(hwnd)
+    return True
 
 
 def terminate(target_path):
